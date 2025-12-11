@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>Webcam Face Tracking VR Window</title>
+    <style>
+        body {
+            margin: 0;
+            background-color: #1a1a1a;
+            color: white;
+            font-family: sans-serif;
+            overflow: hidden; /* 防止滾動 */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        /* 資訊面板 */
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 100;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            pointer-events: none;
+        }
+
+        /* Webcam 預覽 (除錯用，可設為 display: none) */
+        .camera-container {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            width: 160px;
+            height: 120px;
+            z-index: 100;
+            border: 2px solid #555;
+            background: black;
+        }
+        #webcam {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* 鏡像翻轉，讓操作更直覺 */
+        }
+
+        /* --- 3D 視窗核心設定 --- */
+        #viewport {
+            width: 800px;
+            height: 600px;
+            border: 20px solid #444;
+            border-radius: 10px;
+            position: relative;
+            /* 透視設定：數值越小，3D 效果越強烈 */
+            perspective: 1000px; 
+            /* 關鍵：動態改變透視原點 (Perspective Origin) */
+            perspective-origin: 50% 50%; 
+            background: #000;
+            box-shadow: 0 0 50px rgba(0,0,0,0.5);
+            overflow: hidden;
+        }
+
+        #scene {
+            width: 100%;
+            height: 100%;
+            position: relative;
+            transform-style: preserve-3d;
+            transform: translateZ(0); /* 啟動 3D 加速 */
+        }
+
+        /* --- 3D 場景中的物體 --- */
+        .wall {
+            position: absolute;
+            width: 800px;
+            height: 600px;
+            backface-visibility: hidden;
+        }
+
+        /* 後牆 (遠處) */
+        .back-wall {
+            background: repeating-linear-gradient(
+                45deg,
+                #2b2b2b,
+                #2b2b2b 20px,
+                #333 20px,
+                #333 40px
+            );
+            transform: translateZ(-500px); /* 推向深處 */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 80px;
+            color: rgba(255,255,255,0.1);
+            border: 5px solid #555;
+        }
+
+        /* 地板 */
+        .floor {
+            background: 
+                linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px),
+                linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px);
+            background-size: 50px 50px;
+            background-color: #222;
+            height: 1000px; /* 拉長一點 */
+            transform: rotateX(90deg) translateZ(-300px) translateY(-500px);
+        }
+
+        /* 天花板 */
+        .ceiling {
+            background-color: #111;
+            height: 1000px;
+            transform: rotateX(-90deg) translateZ(-300px) translateY(500px);
+        }
+
+        /* 左牆 */
+        .left-wall {
+            background-color: #2a2a2a;
+            width: 1000px;
+            transform: rotateY(90deg) translateZ(-500px) translateX(-500px);
+        }
+
+        /* 右牆 */
+        .right-wall {
+            background-color: #2a2a2a;
+            width: 1000px;
+            transform: rotateY(-90deg) translateZ(-300px) translateX(500px);
+        }
+
+        /* 漂浮物體 (前方) */
+        .floating-box {
+            position: absolute;
+            width: 100px;
+            height: 100px;
+            background: rgba(255, 100, 100, 0.8);
+            border: 2px solid white;
+            top: 50%;
+            left: 50%;
+            /* 讓它浮在螢幕平面附近 */
+            transform: translate(-50%, -50%) translateZ(-100px); 
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-weight: bold;
+            box-shadow: 0 0 20px rgba(255, 100, 100, 0.6);
+        }
+        
+        .floating-box-2 {
+            position: absolute;
+            width: 80px;
+            height: 80px;
+            background: rgba(100, 100, 255, 0.8);
+            border: 2px solid white;
+            top: 30%;
+            left: 70%;
+            transform: translate(-50%, -50%) translateZ(-300px); /* 更深一點 */
+        }
+    </style>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="info">
+        <h3>Webcam 頭部追蹤 (MediaPipe)</h3>
+        <p id="status">正在載入模型...</p>
+        <small>請允許使用攝影機</small>
+    </div>
+
+    <div class="camera-container">
+        <video id="webcam" autoplay playsinline></video>
+    </div>
+
+    <div id="viewport">
+        <div id="scene">
+            <div class="wall back-wall">DEEP SPACE</div>
+            <div class="wall floor"></div>
+            <div class="wall ceiling"></div>
+            <div class="wall left-wall"></div>
+            <div class="wall right-wall"></div>
+            
+            <div class="floating-box">Front</div>
+            <div class="floating-box-2"></div>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('webcam');
+        const statusElement = document.getElementById('status');
+        const viewport = document.getElementById('viewport');
+        const scene = document.getElementById('scene');
+        let faceLandmarker;
+        let lastVideoTime = -1;
+        let vision;
+
+        // 1. 初始化 MediaPipe FaceLandmarker
+        async function createFaceLandmarker() {
+            try {
+                const vision = await FilesetResolver.forVisionTasks(
+                    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+                );
+                
+                faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
+                        delegate: "GPU"
+                    },
+                    outputFaceBlendshapes: false,
+                    runningMode: "VIDEO",
+                    numFaces: 1
+                });
+                
+                statusElement.innerText = "模型已載入，正在啟動攝影機...";
+                startWebcam();
+            } catch (error) {
+                console.error(error);
+                statusElement.innerText = "載入失敗: " + error.message;
+            }
+        }
+
+        // 2. 啟動 Webcam
+        function startWebcam() {
+            navigator.mediaDevices.getUserMedia({ video: true })
+                .then((stream) => {
+                    video.srcObject = stream;
+                    video.addEventListener("loadeddata", predictWebcam);
+                    statusElement.innerText = "追蹤中 (移動頭部看看效果!)";
+                });
+        }
+
+        // 3. 即時預測與渲染迴圈
+        async function predictWebcam() {
+            if (video.currentTime !== lastVideoTime) {
+                lastVideoTime = video.currentTime;
+                const startTimeMs = performance.now();
+                
+                if (faceLandmarker) {
+                    const result = faceLandmarker.detectForVideo(video, startTimeMs);
+                    
+                    if (result.faceLandmarks.length > 0) {
+                        // 取得第一張臉的特徵點
+                        const landmarks = result.faceLandmarks[0];
+                        
+                        // 我們使用雙眼之間的點作為「頭部位置」
+                        // 索引 168 是眉心位置 (大約在雙眼之間)
+                        const noseBridge = landmarks[168]; 
+                        
+                        updatePerspective(noseBridge.x, noseBridge.y, noseBridge.z);
+                    }
+                }
+            }
+            window.requestAnimationFrame(predictWebcam);
+        }
+
+        // 4. 更新 CSS 透視效果 (核心邏輯)
+        // x, y 為 0.0 ~ 1.0 的歸一化座標
+        function updatePerspective(x, y, z) {
+            // MediaPipe 的 x 座標: 0 (左) -> 1 (右)
+            // MediaPipe 的 y 座標: 0 (上) -> 1 (下)
+            
+            // 由於 Webcam 預覽通常是鏡像的，但數據不是，我們需要根據是否鏡像來調整邏輯
+            // 這裡假設我們想要像「照鏡子」一樣移動，或者像「窗戶」一樣移動
+            
+            // 計算偏移量 (0.5 為中心點)
+            // 係數 (例如 2000) 決定了移動的敏感度
+            const offsetX = (x - 0.5) * 2000; 
+            const offsetY = (y - 0.5) * 2000;
+            
+            // 方法 A: 修改 perspective-origin (最簡單，效果最好)
+            // 這裡我們反轉方向，因為當頭向右移，視角應該要能看到左邊的物體側面
+            // 加上 50% 是因為 perspective-origin 的基準是中心
+            const originX = 50 + (x - 0.5) * 300; // 百分比
+            const originY = 50 + (y - 0.5) * 300; // 百分比
+            
+            viewport.style.perspectiveOrigin = `${originX}% ${originY}%`;
+
+            // 方法 B: 輕微旋轉場景以增強立體感 (Parallax)
+            // 當頭向左(x小)，場景應該向右轉(rotateY正)
+            const rotateY = (x - 0.5) * 30; // 30度範圍
+            const rotateX = -(y - 0.5) * 30; // 反向
+
+            scene.style.transform = `
+                translateZ(0) 
+                rotateX(${rotateX}deg) 
+                rotateY(${rotateY}deg)
+            `;
+        }
+
+        // 開始程式
+        createFaceLandmarker();
+    </script>
+</body>
+</html>
